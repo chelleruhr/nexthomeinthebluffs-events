@@ -1,0 +1,10 @@
+{
+  "name": "nexthome-events",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "node scripts/update-events.js"
+  },
+  "dependencies": {
+    "fs-extra": "^11.2.0"
+  }
+}

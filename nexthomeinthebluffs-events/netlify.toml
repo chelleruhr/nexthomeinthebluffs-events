@@ -1,0 +1,6 @@
+[build]
+  command = "node scripts/update-events.js"
+  publish = "public"
+
+[context.production.environment]
+  ZAPIER_EVENTS = "[]"
