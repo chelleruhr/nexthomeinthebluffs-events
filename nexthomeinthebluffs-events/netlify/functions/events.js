@@ -1,7 +1,7 @@
 // netlify/functions/events.js
 // Combine City of Council Bluffs RSS + UnleashCB events into one JSON feed
 
-export async function handler(event, context) {
+exports.handler = async function(event, context) {
   const cityRssUrl =
     "https://www.councilbluffs-ia.gov/RSSFeed.aspx?ModID=58&CID=Main-Calendar-14";
   const unleashUrl = "https://www.unleashcb.com/events/30_days/";
@@ -58,12 +58,12 @@ export async function handler(event, context) {
       body: JSON.stringify({ error: "Failed to load events" }),
     };
   }
-}
+};
 
 // ---------- helpers ----------
 
 function parseTag(block, tag) {
-  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i");
+  const re = new RegExp(`<\${tag}[^>]*>([\\s\\S]*?)<\\/\${tag}>`, "i");
   const m = block.match(re);
   if (!m) return "";
   return m[1].replace(/<!$$CDATA\[|$$\]>/g, "").trim();
@@ -139,7 +139,7 @@ function parseUnleash(html) {
         .replace("|", "")
         .replace(/\ba\.m\./i, "AM")
         .replace(/\bp\.m\./i, "PM");
-      const candidate = `${clean} ${year}`;
+      const candidate = `\${clean} \${year}`;
       const d = new Date(candidate);
       if (!isNaN(d)) dateObj = d;
     }
@@ -147,20 +147,4 @@ function parseUnleash(html) {
     events.push({
       source: "UnleashCB",
       title,
-      link: link.startsWith("http")
-        ? link
-        : `https://www.unleashcb.com${link}`,
-      description: "",
-      dateText,
-      dateObj,
-      location: "",
-    });
-  }
-
-  return events;
-}
-
-function stripHtml(str = "") {
-  return str.replace(/<[^>]*>/g, "").trim();
-}
-
+      link: link.start
