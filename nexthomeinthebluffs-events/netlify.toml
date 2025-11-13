@@ -2,5 +2,9 @@
   command = "node scripts/update-events.js"
   publish = "public"
 
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
 [context.production.environment]
   ZAPIER_EVENTS = "[]"
