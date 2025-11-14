@@ -1,154 +1,110 @@
 // netlify/functions/events.js
-// Updated to support new City of CB XML structure + new UnleashCB HTML cards
+// Combines City of Council Bluffs RSS + UnleashCB API into one JSON feed
 
 const CITY_RSS_URL =
   "https://www.councilbluffs-ia.gov/RSSFeed.aspx?ModID=58&CID=Main-Calendar-14";
-const UNLEASH_URL = "https://www.unleashcb.com/events/30_days/";
 
-exports.handler = async function () {
+const UNLEASH_API_URL =
+  "https://www.unleashcb.com/api/external/events?days=30";
+
+exports.handler = async function (event, context) {
   try {
-    const [cityXml, unleashHtml] = await Promise.all([
+    // Fetch both sources
+    const [cityXml, unleashJson] = await Promise.all([
       fetch(CITY_RSS_URL).then((r) => r.text()),
-      fetch(UNLEASH_URL).then((r) => r.text()),
+      fetch(UNLEASH_API_URL).then((r) => r.json()),
     ]);
 
-    const cityEvents = parseCityRss(cityXml);
-    const unleashEvents = parseUnleash(unleashHtml);
+    const cityEvents = parseCity(cityXml);
+    const unleashEvents = parseUnleashAPI(unleashJson);
 
-    const all = [...cityEvents, ...unleashEvents];
+    let all = [...cityEvents, ...unleashEvents];
 
+    // Filter to next ~60 days
     const now = new Date();
-    const filtered = all.filter((e) => {
-      if (!e.dateObj) return true;
+    all = all.filter((e) => {
+      if (!e.dateObj) return false;
       const diff = (e.dateObj - now) / (1000 * 60 * 60 * 24);
-      return diff > -7 && diff < 60;
+      return diff >= -7 && diff <= 60;
     });
 
-    filtered.sort((a, b) => {
-      if (!a.dateObj && !b.dateObj) return 0;
-      if (!a.dateObj) return 1;
-      if (!b.dateObj) return -1;
-      return a.dateObj - b.dateObj;
-    });
+    // Sort by date
+    all.sort((a, b) => (a.dateObj > b.dateObj ? 1 : -1));
 
     return {
       statusCode: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify(filtered),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(all),
     };
   } catch (err) {
-    console.error("Function error:", err);
     return {
       statusCode: 500,
-      body: JSON.stringify({
-        error: "Failed to load events",
-        details: err.message,
-      }),
+      body: JSON.stringify({ error: err.message }),
     };
   }
 };
 
-// ----------------- City RSS PARSER -----------------
+function parseCity(xml) {
+  const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+  return items.map((item) => {
+    const block = item[1];
 
-function parseCityRss(xml) {
-  const events = [];
-  const items = xml.split("<item>").slice(1);
-
-  for (const raw of items) {
-    const block = raw.split("</item>")[0];
-
-    const title = extract(block, "title") || "City Event";
-    const link = extract(block, "link") || "";
-    const dateText = extract(block, "calendarEvent:EventDates");
-    const timeText = extract(block, "calendarEvent:EventTimes");
-    const location = extract(block, "calendarEvent:Location");
+    const title = get(block, "title");
+    const link = get(block, "link");
+    const description = get(block, "description");
+    const location = get(block, "calendarEvent:Location");
+    const date = get(block, "calendarEvent:EventDates");
+    const image = getAttr(block, "enclosure", "url");
 
     let dateObj = null;
-    if (dateText) {
-      const d = new Date(dateText + " " + new Date().getFullYear());
-      if (!isNaN(d)) dateObj = d;
+    if (date) {
+      dateObj = new Date(date.replace(/<[^>]+>/g, "").trim());
     }
 
-    events.push({
+    return {
       source: "City of Council Bluffs",
       title,
-      date: `${dateText} ${timeText}`.trim(),
+      date,
       dateObj,
       location,
-      description: "",
+      description,
       link,
       image:
+        image ||
         "https://placehold.co/600x400/ff6600/ffffff?text=Council+Bluffs+Event",
-    });
-  }
-
-  return events;
+    };
+  });
 }
 
-function extract(block, tag) {
-  const open = `<${tag}>`;
-  const close = `</${tag}>`;
-  const start = block.indexOf(open);
-  if (start === -1) return "";
-  const end = block.indexOf(close, start);
-  if (end === -1) return "";
-  return block.slice(start + open.length, end).trim();
-}
+function parseUnleashAPI(json) {
+  if (!Array.isArray(json)) return [];
 
-// ----------------- UNLEASH PARSER -----------------
+  return json.map((e) => {
+    const dt = new Date(e.date_start);
 
-function parseUnleash(html) {
-  const events = [];
-
-  // Match each full article event card
-  const cardRegex = /<article[\s\S]*?<\/article>/gi;
-  const cards = html.match(cardRegex) || [];
-
-  for (const card of cards) {
-
-    // Link
-    const linkMatch = card.match(/<a[^>]+href="([^"]+)"/i);
-    const link = linkMatch
-      ? (linkMatch[1].startsWith("http")
-          ? linkMatch[1]
-          : "https://www.unleashcb.com" + linkMatch[1])
-      : "";
-
-    // Image
-    const imgMatch = card.match(/<img[^>]+src="([^"]+)"/i);
-    const image = imgMatch
-      ? imgMatch[1]
-      : "https://placehold.co/600x400/ff6600/ffffff?text=Unleash+Event";
-
-    // Title
-    const titleMatch = card.match(/<h2[^>]*>(.*?)<\/h2>/i);
-    const title = titleMatch ? strip(titleMatch[1]) : "UnleashCB Event";
-
-    // Date
-    const dateMatch = card.match(/<p[^>]*>(.*?)<\/p>/i);
-    const dateText = dateMatch ? strip(dateMatch[1]) : "";
-
-    let dateObj = null;
-    if (dateText) {
-      const cleaned = dateText.replace("|", "").trim();
-      const d = new Date(cleaned + " " + new Date().getFullYear());
-      if (!isNaN(d)) dateObj = d;
-    }
-
-    events.push({
+    return {
       source: "UnleashCB",
-      title,
-      date: dateText,
-      dateObj,
-      location: "",
-      description: "",
-      link,
-      image,
-    });
-  }
+      title: e.title,
+      date: e.human_date || e.date_start,
+      dateObj: dt,
+      location: e.location || "",
+      description: e.description || "",
+      link: e.url,
+      image:
+        e.image ||
+        "https://placehold.co/600x400/00629B/ffffff?text=UnleashCB+Event",
+    };
+  });
+}
 
-  return events;
+function get(xml, tag) {
+  const m = xml.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
+  return m ? m[1].trim() : "";
+}
+
+function getAttr(xml, tag, attr) {
+  const m = xml.match(
+    new RegExp(`<${tag} [^>]*${attr}="([^"]+)"[^>]*>`, "i")
+  );
+  return m ? m[1] : "";
 }
