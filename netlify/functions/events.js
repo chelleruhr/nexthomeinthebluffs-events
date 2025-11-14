@@ -12,8 +12,23 @@ exports.handler = async function (event, context) {
     // Fetch both sources
     const [cityXml, unleashJson] = await Promise.all([
       fetch(CITY_RSS_URL).then((r) => r.text()),
-      fetch(UNLEASH_API_URL).then((r) => r.json()),
-    ]);
+      fetch(UNLEASH_API_URL, {
+  headers: {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36",
+    Accept: "application/json",
+  },
+})
+  .then(async (r) => {
+    const text = await r.text();
+
+    if (text.trim().startsWith("<")) {
+      throw new Error("UnleashCB returned HTML instead of JSON");
+    }
+
+    return JSON.parse(text);
+  }),
+
 
     const cityEvents = parseCity(cityXml);
     const unleashEvents = parseUnleashAPI(unleashJson);
