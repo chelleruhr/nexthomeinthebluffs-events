@@ -1,5 +1,5 @@
 // netlify/functions/events.js
-// Combine City of CB RSS + UnleashCB HTML scraper
+// Combine City of Council Bluffs RSS + UnleashCB HTML scraper
 
 const CITY_RSS_URL =
   "https://www.councilbluffs-ia.gov/RSSFeed.aspx?ModID=58&CID=Main-Calendar-14";
