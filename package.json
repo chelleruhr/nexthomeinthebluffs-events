@@ -5,6 +5,8 @@
     "build": "node scripts/update-events.js"
   },
   "dependencies": {
-    "fs-extra": "^11.2.0"
+    "fs-extra": "11.2.0",
+    "cheerio": "^1.0.0",
+    "node-fetch": "^2.6.7"
   }
 }
