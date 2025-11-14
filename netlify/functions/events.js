@@ -103,27 +103,40 @@ function extract(block, tag) {
 function parseUnleash(html) {
   const events = [];
 
-  // Find each card
+  // Match each full article event card
   const cardRegex = /<article[\s\S]*?<\/article>/gi;
   const cards = html.match(cardRegex) || [];
 
   for (const card of cards) {
-    const titleMatch = card.match(/<h2[^>]*>(.*?)<\/h2>/i);
-    const dateMatch = card.match(/<p[^>]*>(.*?)<\/p>/i);
-    const linkMatch = card.match(/<a[^>]+href="([^"]+)"/i);
-    const imgMatch = card.match(/<img[^>]+src="([^"]+)"/i);
 
-    const title = titleMatch ? strip(titleMatch[1]) : "UnleashCB Event";
-    const dateText = dateMatch ? strip(dateMatch[1]) : "";
-    const link = linkMatch ? linkMatch[1] : "";
+    // Link
+    const linkMatch = card.match(/<a[^>]+href="([^"]+)"/i);
+    const link = linkMatch
+      ? (linkMatch[1].startsWith("http")
+          ? linkMatch[1]
+          : "https://www.unleashcb.com" + linkMatch[1])
+      : "";
+
+    // Image
+    const imgMatch = card.match(/<img[^>]+src="([^"]+)"/i);
     const image = imgMatch
       ? imgMatch[1]
-      : "https://placehold.co/600x400/ff6600/ffffff?text=UnleashCB+Event";
+      : "https://placehold.co/600x400/ff6600/ffffff?text=Unleash+Event";
+
+    // Title
+    const titleMatch = card.match(/<h2[^>]*>(.*?)<\/h2>/i);
+    const title = titleMatch ? strip(titleMatch[1]) : "UnleashCB Event";
+
+    // Date
+    const dateMatch = card.match(/<p[^>]*>(.*?)<\/p>/i);
+    const dateText = dateMatch ? strip(dateMatch[1]) : "";
 
     let dateObj = null;
-    const cleaned = dateText.replace("|", "").trim();
-    const d = new Date(cleaned + " " + new Date().getFullYear());
-    if (!isNaN(d)) dateObj = d;
+    if (dateText) {
+      const cleaned = dateText.replace("|", "").trim();
+      const d = new Date(cleaned + " " + new Date().getFullYear());
+      if (!isNaN(d)) dateObj = d;
+    }
 
     events.push({
       source: "UnleashCB",
@@ -138,8 +151,4 @@ function parseUnleash(html) {
   }
 
   return events;
-}
-
-function strip(str) {
-  return str.replace(/<[^>]*>/g, "").trim();
 }
