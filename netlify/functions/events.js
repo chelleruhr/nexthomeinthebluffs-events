@@ -1,5 +1,5 @@
 // netlify/functions/events.js
-// Combine City of Council Bluffs RSS + UnleashCB events into one JSON feed
+// Updated to support new City of CB XML structure + new UnleashCB HTML cards
 
 const CITY_RSS_URL =
   "https://www.councilbluffs-ia.gov/RSSFeed.aspx?ModID=58&CID=Main-Calendar-14";
@@ -37,19 +37,7 @@ exports.handler = async function () {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
       },
-      body: JSON.stringify(
-        filtered.map((e) => ({
-          title: e.title,
-          date: e.dateText || "",
-          location: e.location || "",
-          description: e.description || "",
-          link: e.link || "",
-          image:
-            e.image ||
-            "https://placehold.co/600x400/ff6600/ffffff?text=Council+Bluffs+Event",
-          source: e.source,
-        }))
-      ),
+      body: JSON.stringify(filtered),
     };
   } catch (err) {
     console.error("Function error:", err);
@@ -63,97 +51,95 @@ exports.handler = async function () {
   }
 };
 
-// ----------------- HELPERS -----------------
+// ----------------- City RSS PARSER -----------------
 
 function parseCityRss(xml) {
-  const items = [];
-  const blocks = xml.split("<item>").slice(1);
+  const events = [];
+  const items = xml.split("<item>").slice(1);
 
-  for (const block of blocks) {
-    const section = block.split("</item>")[0];
+  for (const raw of items) {
+    const block = raw.split("</item>")[0];
 
-    const title = extract(section, "title");
-    const link = extract(section, "link");
-    const description = stripHtml(extract(section, "description")).slice(0, 240);
-    const pubDate = extract(section, "pubDate");
+    const title = extract(block, "title") || "City Event";
+    const link = extract(block, "link") || "";
+    const dateText = extract(block, "calendarEvent:EventDates");
+    const timeText = extract(block, "calendarEvent:EventTimes");
+    const location = extract(block, "calendarEvent:Location");
 
     let dateObj = null;
-    if (pubDate) {
-      const d = new Date(pubDate);
+    if (dateText) {
+      const d = new Date(dateText + " " + new Date().getFullYear());
       if (!isNaN(d)) dateObj = d;
     }
 
-    items.push({
+    events.push({
       source: "City of Council Bluffs",
       title,
-      link,
-      description,
-      dateText: pubDate || "",
+      date: `${dateText} ${timeText}`.trim(),
       dateObj,
-      location: "",
-    });
-  }
-  return items;
-}
-
-function parseUnleash(html) {
-  const events = [];
-  const eventRegex = /<a[^>]+href="([^"]+)"[^>]*>\s*Event Details\s*([^<]+)<\/a>/g;
-
-  let match;
-  while ((match = eventRegex.exec(html))) {
-    const href = match[1];
-    const text = match[2].trim();
-    const { title, dateText, dateObj } = splitTitleAndDate(text);
-
-    events.push({
-      source: "UnleashCB",
-      title,
-      link: href.startsWith("http")
-        ? href
-        : "https://www.unleashcb.com" + href,
+      location,
       description: "",
-      dateText,
-      dateObj,
-      location: "",
+      link,
+      image:
+        "https://placehold.co/600x400/ff6600/ffffff?text=Council+Bluffs+Event",
     });
   }
+
   return events;
 }
 
 function extract(block, tag) {
-  const start = block.indexOf(`<${tag}>`);
+  const open = `<${tag}>`;
+  const close = `</${tag}>`;
+  const start = block.indexOf(open);
   if (start === -1) return "";
-  const end = block.indexOf(`</${tag}>`, start);
+  const end = block.indexOf(close, start);
   if (end === -1) return "";
-  return block.slice(start + tag.length + 2, end).trim();
+  return block.slice(start + open.length, end).trim();
 }
 
-function stripHtml(str) {
-  return str.replace(/<[^>]*>/g, "").trim();
-}
+// ----------------- UNLEASH PARSER -----------------
 
-function splitTitleAndDate(text) {
-  const months = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-  ];
+function parseUnleash(html) {
+  const events = [];
 
-  for (let m of months) {
-    const idx = text.indexOf(m);
-    if (idx !== -1) {
-      const title = text.slice(0, idx).trim();
-      const dateText = text.slice(idx).trim();
-      const year = new Date().getFullYear();
-      const d = new Date(dateText + " " + year);
+  // Find each card
+  const cardRegex = /<article[\s\S]*?<\/article>/gi;
+  const cards = html.match(cardRegex) || [];
 
-      return {
-        title,
-        dateText,
-        dateObj: isNaN(d) ? null : d,
-      };
-    }
+  for (const card of cards) {
+    const titleMatch = card.match(/<h2[^>]*>(.*?)<\/h2>/i);
+    const dateMatch = card.match(/<p[^>]*>(.*?)<\/p>/i);
+    const linkMatch = card.match(/<a[^>]+href="([^"]+)"/i);
+    const imgMatch = card.match(/<img[^>]+src="([^"]+)"/i);
+
+    const title = titleMatch ? strip(titleMatch[1]) : "UnleashCB Event";
+    const dateText = dateMatch ? strip(dateMatch[1]) : "";
+    const link = linkMatch ? linkMatch[1] : "";
+    const image = imgMatch
+      ? imgMatch[1]
+      : "https://placehold.co/600x400/ff6600/ffffff?text=UnleashCB+Event";
+
+    let dateObj = null;
+    const cleaned = dateText.replace("|", "").trim();
+    const d = new Date(cleaned + " " + new Date().getFullYear());
+    if (!isNaN(d)) dateObj = d;
+
+    events.push({
+      source: "UnleashCB",
+      title,
+      date: dateText,
+      dateObj,
+      location: "",
+      description: "",
+      link,
+      image,
+    });
   }
 
-  return { title: text, dateText: "", dateObj: null };
+  return events;
+}
+
+function strip(str) {
+  return str.replace(/<[^>]*>/g, "").trim();
 }
