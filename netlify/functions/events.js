@@ -1,15 +1,15 @@
 // netlify/functions/events.js
 // Combine City of Council Bluffs RSS + UnleashCB events into one JSON feed
 
-exports.handler = async function(event, context) {
-  const cityRssUrl =
-    "https://www.councilbluffs-ia.gov/RSSFeed.aspx?ModID=58&CID=Main-Calendar-14";
-  const unleashUrl = "https://www.unleashcb.com/events/30_days/";
+const CITY_RSS_URL =
+  "https://www.councilbluffs-ia.gov/RSSFeed.aspx?ModID=58&CID=Main-Calendar-14";
+const UNLEASH_URL = "https://www.unleashcb.com/events/30_days/";
 
+exports.handler = async function (event, context) {
   try {
     const [cityXml, unleashHtml] = await Promise.all([
-      fetch(cityRssUrl).then((r) => r.text()),
-      fetch(unleashUrl).then((r) => r.text()),
+      fetch(CITY_RSS_URL).then((r) => r.text()),
+      fetch(UNLEASH_URL).then((r) => r.text()),
     ]);
 
     const cityEvents = parseCityRss(cityXml);
@@ -21,6 +21,7 @@ exports.handler = async function(event, context) {
     const filtered = all.filter((e) => {
       if (!e.dateObj) return true;
       const diff = (e.dateObj - now) / (1000 * 60 * 60 * 24);
+      // keep events roughly from the last week through 60 days out
       return diff > -7 && diff < 60;
     });
 
@@ -52,26 +53,34 @@ exports.handler = async function(event, context) {
       body: JSON.stringify(responseBody),
     };
   } catch (err) {
-    console.error("Error building events feed:", err);
+    console.error("Error in events function:", err);
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: "Failed to load events" }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: "Failed to load events",
+        details: String(err),
+      }),
     };
   }
 };
 
-// ---------- helpers ----------
+// ----------------- helpers -----------------
 
 function parseTag(block, tag) {
-  const re = new RegExp(`<\${tag}[^>]*>([\\s\\S]*?)<\\/\${tag}>`, "i");
+  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i");
   const m = block.match(re);
   if (!m) return "";
-  return m[1].replace(/<!$$CDATA\[|$$\]>/g, "").trim();
+  return m[1].replace(/<!\\[CDATA\\[|\\]\\]>/g, "").trim();
+}
+
+function stripHtml(str = "") {
+  return str.replace(/<[^>]*>/g, "").trim();
 }
 
 function parseCityRss(xml) {
   const items = [];
-  const itemRe = /<item>([\s\S]*?)<\/item>/gi;
+  const itemRe = /<item>([\\s\\S]*?)<\\/item>/gi;
   let match;
   while ((match = itemRe.exec(xml))) {
     const block = match[1];
@@ -91,7 +100,7 @@ function parseCityRss(xml) {
       title,
       link,
       description: stripHtml(description).slice(0, 240),
-      dateText: pubDate,
+      dateText: pubDate || "",
       dateObj,
       location: "",
     });
@@ -102,30 +111,38 @@ function parseCityRss(xml) {
 function parseUnleash(html) {
   const events = [];
   const months = [
-    "January","February","March","April","May","June",
-    "July","August","September","October","November","December"
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
   ];
 
+  // Events look like: <a ...>Event Details {Title} {Date} | {Time}</a>
   const re =
-    /<a[^>]+href="([^"]+)"[^>]*>\s*Event Details\s*([^<]+)<\/a>/gi;
-  let match;
+    /<a[^>]+href="([^"]+)"[^>]*>\\s*Event Details\\s*([^<]+)<\\/a>/gi;
 
+  let match;
   while ((match = re.exec(html))) {
-    const link = match[1];
-    const text = match[2].replace(/\s+/g, " ").trim();
+    const href = match[1];
+    const text = match[2].replace(/\\s+/g, " ").trim();
 
     let title = text;
     let dateText = "";
     let dateObj = null;
 
     let monthIndex = -1;
-    let monthWord = "";
-
     for (const m of months) {
       const idx = text.indexOf(m + " ");
       if (idx !== -1) {
         monthIndex = idx;
-        monthWord = m;
         break;
       }
     }
@@ -137,9 +154,9 @@ function parseUnleash(html) {
       const year = new Date().getFullYear();
       const clean = dateText
         .replace("|", "")
-        .replace(/\ba\.m\./i, "AM")
-        .replace(/\bp\.m\./i, "PM");
-      const candidate = `\${clean} \${year}`;
+        .replace(/\\ba\\.m\\./gi, "AM")
+        .replace(/\\bp\\.m\\./gi, "PM");
+      const candidate = `${clean} ${year}`;
       const d = new Date(candidate);
       if (!isNaN(d)) dateObj = d;
     }
@@ -147,4 +164,15 @@ function parseUnleash(html) {
     events.push({
       source: "UnleashCB",
       title,
-      link: link.start
+      link: href.startsWith("http")
+        ? href
+        : `https://www.unleashcb.com${href}`,
+      description: "",
+      dateText,
+      dateObj,
+      location: "",
+    });
+  }
+
+  return events;
+}
