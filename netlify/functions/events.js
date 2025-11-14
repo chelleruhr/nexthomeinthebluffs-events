@@ -1,45 +1,33 @@
-// netlify/functions/events.js
-// Combined Events Feed (Council Bluffs RSS + UnleashCB JSON)
-
 import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 
 const CITY_RSS_URL =
   "https://www.councilbluffs-ia.gov/RSSFeed.aspx?ModID=58&CID=Main-Calendar-14";
 
-const UNLEASH_API =
-  "https://www.unleashcb.com/api/events?days=60"; // JSON feed, not HTML
+const UNLEASH_URL = "https://www.unleashcb.com/events/30_days/";
 
 export const handler = async () => {
   try {
-    // ---------------------------
-    // FETCH CITY RSS FEED
-    // ---------------------------
+    // Fetch City RSS
     const cityXml = await fetch(CITY_RSS_URL).then((r) => r.text());
     const cityEvents = parseCityRss(cityXml);
 
-    // ---------------------------
-    // FETCH UNLEASHCB JSON
-    // ---------------------------
-    const unleashJson = await fetch(UNLEASH_API).then((r) => r.json());
-    const unleashEvents = parseUnleash(unleashJson);
+    // Fetch UnleashCB HTML
+    const unleashHtml = await fetch(UNLEASH_URL).then((r) => r.text());
+    const unleashEvents = parseUnleashHtml(unleashHtml);
 
-    // ---------------------------
-    // MERGE + FILTER
-    // ---------------------------
+    // Merge + sort
     const all = [...cityEvents, ...unleashEvents];
 
     const now = new Date();
     const upcoming = all.filter((e) => {
       if (!e.dateObj) return false;
-      const diff = (e.dateObj - now) / (1000 * 60 * 60 * 24);
-      return diff >= -1 && diff <= 366; // from yesterday to 1 year out
+      const diff = (e.dateObj - now) / 86400000;
+      return diff > -1 && diff <= 366;
     });
 
-    // SORT
-    upcoming.sort((a, b) => a.dateObj - b.dateObj);
+    upcoming.sort((a, b) => new Date(a.dateObj) - new Date(b.dateObj));
 
-    // RETURN JSON
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
@@ -53,9 +41,9 @@ export const handler = async () => {
   }
 };
 
-// ---------------------------------------------------------------------
-// PARSE CITY OF COUNCIL BLUFFS RSS
-// ---------------------------------------------------------------------
+// -------------------------
+// PARSE CITY RSS
+// -------------------------
 function parseCityRss(xml) {
   const $ = cheerio.load(xml, { xmlMode: true });
   const out = [];
@@ -63,25 +51,22 @@ function parseCityRss(xml) {
   $("item").each((i, el) => {
     const title = $(el).find("title").text().trim();
     const link = $(el).find("link").text().trim();
-    const rawDesc = $(el).find("description").text().trim();
-
-    const dateText = $(el).find("calendarEvent\\:EventDates").text().trim();
+    const description = stripHtml($(el).find("description").text().trim());
+    const date = $(el).find("calendarEvent\\:EventDates").text().trim();
     const location = $(el).find("calendarEvent\\:Location").text().trim();
     const image = $(el).find("enclosure").attr("url");
 
-    const cleanDesc = stripHtml(rawDesc);
-
     let dateObj = null;
-    if (dateText) dateObj = new Date(dateText);
+    if (date) dateObj = new Date(date);
 
     out.push({
       source: "City of Council Bluffs",
       title,
       link,
-      date: dateText,
-      dateObj: dateObj ? dateObj.toISOString() : null,
+      date,
+      dateObj,
       location,
-      description: cleanDesc,
+      description,
       image:
         image ||
         "https://placehold.co/600x400/ff6600/ffffff?text=Council+Bluffs+Event",
@@ -91,37 +76,47 @@ function parseCityRss(xml) {
   return out;
 }
 
-// ---------------------------------------------------------------------
-// PARSE UNLEASHCB JSON
-// ---------------------------------------------------------------------
-function parseUnleash(json) {
-  if (!Array.isArray(json)) return [];
+// -------------------------
+// PARSE UNLEASHCB HTML
+// -------------------------
+function parseUnleashHtml(html) {
+  const $ = cheerio.load(html);
+  const out = [];
 
-  return json.map((e) => {
-    const dateObj = e.startDate ? new Date(e.startDate) : null;
+  $(".listingCard").each((i, card) => {
+    const title = $(card).find(".listingCard-title").text().trim();
+    const link = "https://www.unleashcb.com" + $(card).find("a").attr("href");
+    const date = $(card).find(".listingCard-date").text().trim();
+    const img = $(card).find("img").attr("src");
 
-    return {
+    let dateObj = null;
+    if (date) dateObj = parseUnleashDate(date);
+
+    out.push({
       source: "UnleashCB",
-      title: e.title || "Untitled Event",
-      link: e.url || "",
-      date: e.fullDate || "",
-      dateObj: dateObj ? dateObj.toISOString() : null,
-      location: e.location || "",
-      description: e.description || "",
+      title,
+      link,
+      date,
+      dateObj,
+      location: "",
+      description: "",
       image:
-        e.image ||
-        "https://placehold.co/600x400/00629B/ffffff?text=Council+Bluffs+Event",
-    };
+        img ||
+        "https://placehold.co/600x400/00629B/ffffff?text=UnleashCB+Event",
+    });
   });
+
+  return out;
 }
 
-// ---------------------------------------------------------------------
-// HTML CLEANER
-// ---------------------------------------------------------------------
+// Convert UnleashCB date text to Date()
+function parseUnleashDate(text) {
+  // Example: "November 14 | 5:00 - 8:00 p.m."
+  let dayPart = text.split("|")[0].trim();
+  return new Date(dayPart);
+}
+
+// Strip HTML tags
 function stripHtml(html) {
-  if (!html) return "";
-  return html
-    .replace(/<[^>]+>/g, " ") // remove tags
-    .replace(/\s+/g, " ")
-    .trim();
+  return html ? html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() : "";
 }
