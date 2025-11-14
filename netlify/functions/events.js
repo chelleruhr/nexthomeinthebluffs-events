@@ -1,125 +1,160 @@
 // netlify/functions/events.js
-// Combines City of Council Bluffs RSS + UnleashCB API into one JSON feed
+// Combines City of Council Bluffs RSS + UnleashCB JSON into one feed
 
 const CITY_RSS_URL =
   "https://www.councilbluffs-ia.gov/RSSFeed.aspx?ModID=58&CID=Main-Calendar-14";
 
-const UNLEASH_API_URL =
-  "https://www.unleashcb.com/api/external/events?days=30";
+const UNLEASH_API_URL = "https://www.unleashcb.com/api/event/listing";
 
 exports.handler = async function (event, context) {
   try {
-    // Fetch both sources
+    // Fetch RSS + JSON in parallel
     const [cityXml, unleashJson] = await Promise.all([
       fetch(CITY_RSS_URL).then((r) => r.text()),
       fetch(UNLEASH_API_URL, {
-  headers: {
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36",
-    Accept: "application/json",
-  },
-})
-  .then(async (r) => {
-    const text = await r.text();
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36",
+          Accept: "application/json",
+        },
+      }).then(async (r) => {
+        const text = await r.text();
 
-    if (text.trim().startsWith("<")) {
-      throw new Error("UnleashCB returned HTML instead of JSON");
-    }
+        // If the API returns HTML instead of JSON, throw an error
+        if (text.trim().startsWith("<")) {
+          throw new Error("UnleashCB returned HTML instead of JSON");
+        }
 
-    return JSON.parse(text);
-  }),
+        return JSON.parse(text);
+      }),
+    ]);
 
+    const cityEvents = parseCityRss(cityXml);
+    const unleashEvents = parseUnleash(unleashJson);
 
-    const cityEvents = parseCity(cityXml);
-    const unleashEvents = parseUnleashAPI(unleashJson);
+    const combined = [...cityEvents, ...unleashEvents];
 
-    let all = [...cityEvents, ...unleashEvents];
-
-    // Filter to next ~60 days
+    // Filter to events -7 days to +60 days
     const now = new Date();
-    all = all.filter((e) => {
-      if (!e.dateObj) return false;
-      const diff = (e.dateObj - now) / (1000 * 60 * 60 * 24);
-      return diff >= -7 && diff <= 60;
+    const filtered = combined.filter((ev) => {
+      if (!ev.dateObj) return false;
+      const diff = (ev.dateObj - now) / (1000 * 60 * 60 * 24);
+      return diff > -7 && diff < 60;
     });
 
     // Sort by date
-    all.sort((a, b) => (a.dateObj > b.dateObj ? 1 : -1));
+    filtered.sort((a, b) => {
+      if (!a.dateObj && !b.dateObj) return 0;
+      if (!a.dateObj) return 1;
+      if (!b.dateObj) return -1;
+      return a.dateObj - b.dateObj;
+    });
 
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(all),
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
+      body: JSON.stringify(filtered),
     };
   } catch (err) {
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: err.message }),
+      body: JSON.stringify({
+        error: err.message,
+      }),
     };
   }
 };
 
-function parseCity(xml) {
-  const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
-  return items.map((item) => {
-    const block = item[1];
+/* -------------------------------
+   PARSE CITY RSS
+-------------------------------- */
+function parseCityRss(xml) {
+  const parser = /<item>([\s\S]*?)<\/item>/g;
+  const items = [];
+  let match;
 
-    const title = get(block, "title");
-    const link = get(block, "link");
-    const description = get(block, "description");
-    const location = get(block, "calendarEvent:Location");
-    const date = get(block, "calendarEvent:EventDates");
-    const image = getAttr(block, "enclosure", "url");
+  while ((match = parser.exec(xml)) !== null) {
+    const block = match[1];
 
-    let dateObj = null;
-    if (date) {
-      dateObj = new Date(date.replace(/<[^>]+>/g, "").trim());
-    }
+    const get = (tag) => {
+      const m = block.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+      return m ? m[1].trim() : "";
+    };
 
-    return {
+    const title = get("title");
+    const description = get("description")
+      .replace(/<[^>]+>/g, " ")
+      .trim();
+    const link = get("link");
+    const location = get("calendarEvent:Location");
+    const eventDate = get("calendarEvent:EventDates");
+    const eventTime = get("calendarEvent:EventTimes");
+
+    // Create date string
+    const dateStr = `${eventDate} ${eventTime}`.trim();
+    const dateObj = parseDate(dateStr);
+
+    items.push({
       source: "City of Council Bluffs",
       title,
-      date,
+      description,
+      date: dateStr,
       dateObj,
       location,
-      description,
       link,
       image:
-        image ||
         "https://placehold.co/600x400/ff6600/ffffff?text=Council+Bluffs+Event",
-    };
-  });
+    });
+  }
+
+  return items;
 }
 
-function parseUnleashAPI(json) {
-  if (!Array.isArray(json)) return [];
+/* -------------------------------
+   PARSE UNLEASHCB JSON
+-------------------------------- */
+function parseUnleash(json) {
+  if (!json || !json.data) return [];
 
-  return json.map((e) => {
-    const dt = new Date(e.date_start);
+  return json.data.map((ev) => {
+    const dateStr = ev.date || "";
+    const dateObj = parseDate(dateStr);
 
     return {
       source: "UnleashCB",
-      title: e.title,
-      date: e.human_date || e.date_start,
-      dateObj: dt,
-      location: e.location || "",
-      description: e.description || "",
-      link: e.url,
+      title: ev.title || "",
+      description: ev.body || "",
+      date: dateStr,
+      dateObj,
+      location: ev.location || "",
+      link: ev.slug
+        ? `https://www.unleashcb.com/events/${ev.slug}/`
+        : "https://www.unleashcb.com/",
       image:
-        e.image ||
+        ev.image?.src ||
         "https://placehold.co/600x400/00629B/ffffff?text=UnleashCB+Event",
     };
   });
 }
 
-function get(xml, tag) {
-  const m = xml.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
-  return m ? m[1].trim() : "";
-}
+/* -------------------------------
+   DATE PARSER
+-------------------------------- */
+function parseDate(str) {
+  if (!str) return null;
 
-function getAttr(xml, tag, attr) {
-  const m = xml.match(
-    new RegExp(`<${tag} [^>]*${attr}="([^"]+)"[^>]*>`, "i")
-  );
-  return m ? m[1] : "";
+  // First try normal Date()
+  let d = new Date(str);
+  if (!isNaN(d)) return d;
+
+  // Try splitting MM/DD/YYYY
+  const m = str.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (m) {
+    return new Date(`${m[3]}-${m[1]}-${m[2]}`);
+  }
+
+  return null;
 }
