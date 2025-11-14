@@ -5,7 +5,7 @@ const CITY_RSS_URL =
   "https://www.councilbluffs-ia.gov/RSSFeed.aspx?ModID=58&CID=Main-Calendar-14";
 const UNLEASH_URL = "https://www.unleashcb.com/events/30_days/";
 
-exports.handler = async function (event, context) {
+exports.handler = async function () {
   try {
     const [cityXml, unleashHtml] = await Promise.all([
       fetch(CITY_RSS_URL).then((r) => r.text()),
@@ -21,7 +21,6 @@ exports.handler = async function (event, context) {
     const filtered = all.filter((e) => {
       if (!e.dateObj) return true;
       const diff = (e.dateObj - now) / (1000 * 60 * 60 * 24);
-      // keep events roughly from the last week through 60 days out
       return diff > -7 && diff < 60;
     });
 
@@ -32,62 +31,51 @@ exports.handler = async function (event, context) {
       return a.dateObj - b.dateObj;
     });
 
-    const responseBody = filtered.map((e) => ({
-      title: e.title,
-      date: e.dateText || "",
-      location: e.location || "",
-      description: e.description || "",
-      link: e.link || "",
-      image:
-        e.image ||
-        "https://placehold.co/600x400/ff6600/ffffff?text=Council+Bluffs+Event",
-      source: e.source,
-    }));
-
     return {
       statusCode: 200,
       headers: {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
       },
-      body: JSON.stringify(responseBody),
+      body: JSON.stringify(
+        filtered.map((e) => ({
+          title: e.title,
+          date: e.dateText || "",
+          location: e.location || "",
+          description: e.description || "",
+          link: e.link || "",
+          image:
+            e.image ||
+            "https://placehold.co/600x400/ff6600/ffffff?text=Council+Bluffs+Event",
+          source: e.source,
+        }))
+      ),
     };
   } catch (err) {
-    console.error("Error in events function:", err);
+    console.error("Function error:", err);
     return {
       statusCode: 500,
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         error: "Failed to load events",
-        details: String(err),
+        details: err.message,
       }),
     };
   }
 };
 
-// ----------------- helpers -----------------
-
-function parseTag(block, tag) {
-  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i");
-  const m = block.match(re);
-  if (!m) return "";
-  return m[1].replace(/<!\\[CDATA\\[|\\]\\]>/g, "").trim();
-}
-
-function stripHtml(str = "") {
-  return str.replace(/<[^>]*>/g, "").trim();
-}
+// ----------------- HELPERS -----------------
 
 function parseCityRss(xml) {
   const items = [];
-  const itemRe = /<item>([\\s\\S]*?)<\\/item>/gi;
-  let match;
-  while ((match = itemRe.exec(xml))) {
-    const block = match[1];
-    const title = parseTag(block, "title");
-    const link = parseTag(block, "link");
-    const description = parseTag(block, "description");
-    const pubDate = parseTag(block, "pubDate");
+  const blocks = xml.split("<item>").slice(1);
+
+  for (const block of blocks) {
+    const section = block.split("</item>")[0];
+
+    const title = extract(section, "title");
+    const link = extract(section, "link");
+    const description = stripHtml(extract(section, "description")).slice(0, 240);
+    const pubDate = extract(section, "pubDate");
 
     let dateObj = null;
     if (pubDate) {
@@ -99,7 +87,7 @@ function parseCityRss(xml) {
       source: "City of Council Bluffs",
       title,
       link,
-      description: stripHtml(description).slice(0, 240),
+      description,
       dateText: pubDate || "",
       dateObj,
       location: "",
@@ -110,69 +98,62 @@ function parseCityRss(xml) {
 
 function parseUnleash(html) {
   const events = [];
-  const months = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-  ];
-
-  // Events look like: <a ...>Event Details {Title} {Date} | {Time}</a>
-  const re =
-    /<a[^>]+href="([^"]+)"[^>]*>\\s*Event Details\\s*([^<]+)<\\/a>/gi;
+  const eventRegex = /<a[^>]+href="([^"]+)"[^>]*>\s*Event Details\s*([^<]+)<\/a>/g;
 
   let match;
-  while ((match = re.exec(html))) {
+  while ((match = eventRegex.exec(html))) {
     const href = match[1];
-    const text = match[2].replace(/\\s+/g, " ").trim();
-
-    let title = text;
-    let dateText = "";
-    let dateObj = null;
-
-    let monthIndex = -1;
-    for (const m of months) {
-      const idx = text.indexOf(m + " ");
-      if (idx !== -1) {
-        monthIndex = idx;
-        break;
-      }
-    }
-
-    if (monthIndex !== -1) {
-      title = text.slice(0, monthIndex).trim();
-      dateText = text.slice(monthIndex).trim();
-
-      const year = new Date().getFullYear();
-      const clean = dateText
-        .replace("|", "")
-        .replace(/\\ba\\.m\\./gi, "AM")
-        .replace(/\\bp\\.m\\./gi, "PM");
-      const candidate = `${clean} ${year}`;
-      const d = new Date(candidate);
-      if (!isNaN(d)) dateObj = d;
-    }
+    const text = match[2].trim();
+    const { title, dateText, dateObj } = splitTitleAndDate(text);
 
     events.push({
       source: "UnleashCB",
       title,
       link: href.startsWith("http")
         ? href
-        : `https://www.unleashcb.com${href}`,
+        : "https://www.unleashcb.com" + href,
       description: "",
       dateText,
       dateObj,
       location: "",
     });
   }
-
   return events;
+}
+
+function extract(block, tag) {
+  const start = block.indexOf(`<${tag}>`);
+  if (start === -1) return "";
+  const end = block.indexOf(`</${tag}>`, start);
+  if (end === -1) return "";
+  return block.slice(start + tag.length + 2, end).trim();
+}
+
+function stripHtml(str) {
+  return str.replace(/<[^>]*>/g, "").trim();
+}
+
+function splitTitleAndDate(text) {
+  const months = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+  ];
+
+  for (let m of months) {
+    const idx = text.indexOf(m);
+    if (idx !== -1) {
+      const title = text.slice(0, idx).trim();
+      const dateText = text.slice(idx).trim();
+      const year = new Date().getFullYear();
+      const d = new Date(dateText + " " + year);
+
+      return {
+        title,
+        dateText,
+        dateObj: isNaN(d) ? null : d,
+      };
+    }
+  }
+
+  return { title: text, dateText: "", dateObj: null };
 }
