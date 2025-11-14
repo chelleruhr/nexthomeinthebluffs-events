@@ -1,5 +1,5 @@
 // netlify/functions/events.js
-// Combine City of Council Bluffs RSS + UnleashCB HTML scraper
+// Combine City of CB RSS + UnleashCB HTML scraper
 
 const CITY_RSS_URL =
   "https://www.councilbluffs-ia.gov/RSSFeed.aspx?ModID=58&CID=Main-Calendar-14";
@@ -21,22 +21,23 @@ exports.handler = async function () {
     const cityEvents = parseCityRss(cityXml);
     const unleashEvents = parseUnleashHtml(unleashHtml);
 
-    let combined = [...cityEvents, ...unleashEvents];
+    let events = [...cityEvents, ...unleashEvents];
 
-    // DATE FILTERING
+    // FILTER 60 days forward, 7 days back
     const now = new Date();
-    combined = combined.filter((ev) => {
-      if (!ev.dateObj) return false;
-      const diff = (ev.dateObj - now) / (1000 * 60 * 60 * 24);
+    events = events.filter((e) => {
+      if (!e.dateObj) return false;
+      const diff = (e.dateObj - now) / (1000 * 60 * 60 * 24);
       return diff > -7 && diff < 60;
     });
 
-    combined.sort((a, b) => a.dateObj - b.dateObj);
+    // SORT
+    events.sort((a, b) => a.dateObj - b.dateObj);
 
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(combined),
+      body: JSON.stringify(events),
     };
   } catch (err) {
     return {
@@ -46,8 +47,11 @@ exports.handler = async function () {
   }
 };
 
+// -------------------------
+// PARSE CITY RSS
+// -------------------------
 function parseCityRss(xml) {
-  const items = [];
+  const events = [];
   const blocks = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
 
   for (const block of blocks) {
@@ -65,7 +69,7 @@ function parseCityRss(xml) {
     const dateStr = `${date} ${time}`;
     const dateObj = parseDate(dateStr);
 
-    items.push({
+    events.push({
       source: "City of Council Bluffs",
       title,
       link,
@@ -78,10 +82,12 @@ function parseCityRss(xml) {
     });
   }
 
-  return items;
+  return events;
 }
 
-// SCRAPE UNLEASHCB HTML
+// -------------------------
+// PARSE UNLEASHCB HTML
+// -------------------------
 function parseUnleashHtml(html) {
   const events = [];
 
@@ -98,8 +104,10 @@ function parseUnleashHtml(html) {
 
     const link = get(/href="([^"]+)"/);
     const title = get(/<h3[^>]*>([\s\S]*?)<\/h3>/);
-    const date = get(/<p class="event-date">([\s\S]*?)<\/p>/);
     const img = get(/<img[^>]*src="([^"]+)"/);
+
+    // Extract date text if available
+    const date = get(/<p class="event-date">([\s\S]*?)<\/p>/);
 
     const dateObj = parseDate(date);
 
@@ -120,12 +128,16 @@ function parseUnleashHtml(html) {
   return events;
 }
 
+// -------------------------
+// DATE PARSER
+// -------------------------
 function parseDate(str) {
   if (!str) return null;
+
   let d = new Date(str);
   if (!isNaN(d)) return d;
 
-  // Try formats like "November 14 | 5:00 - 8:00 p.m."
+  // Format like: "November 14 | 5:00 - 8:00 p.m."
   const m = str.match(/([A-Za-z]+) (\d{1,2})/);
   if (m) {
     const year = new Date().getFullYear();
