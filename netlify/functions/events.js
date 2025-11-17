@@ -8,25 +8,22 @@ const UNLEASH_URL = "https://www.unleashcb.com/events/30_days/";
 
 export const handler = async () => {
   try {
-    // Fetch City RSS
     const cityXml = await fetch(CITY_RSS_URL).then((r) => r.text());
     const cityEvents = parseCityRss(cityXml);
 
-    // Fetch UnleashCB HTML
     const unleashHtml = await fetch(UNLEASH_URL).then((r) => r.text());
     const unleashEvents = parseUnleashHtml(unleashHtml);
 
-    // Merge + sort
     const all = [...cityEvents, ...unleashEvents];
 
     const now = new Date();
     const upcoming = all.filter((e) => {
       if (!e.dateObj) return false;
       const diff = (e.dateObj - now) / 86400000;
-      return diff > -1 && diff <= 366;
+      return diff >= -1 && diff <= 365;
     });
 
-    upcoming.sort((a, b) => new Date(a.dateObj) - new Date(b.dateObj));
+    upcoming.sort((a, b) => a.dateObj - b.dateObj);
 
     return {
       statusCode: 200,
@@ -41,9 +38,6 @@ export const handler = async () => {
   }
 };
 
-// -------------------------
-// PARSE CITY RSS
-// -------------------------
 function parseCityRss(xml) {
   const $ = cheerio.load(xml, { xmlMode: true });
   const out = [];
@@ -51,13 +45,12 @@ function parseCityRss(xml) {
   $("item").each((i, el) => {
     const title = $(el).find("title").text().trim();
     const link = $(el).find("link").text().trim();
-    const description = stripHtml($(el).find("description").text().trim());
+    const desc = stripHtml($(el).find("description").text().trim());
     const date = $(el).find("calendarEvent\\:EventDates").text().trim();
     const location = $(el).find("calendarEvent\\:Location").text().trim();
-    const image = $(el).find("enclosure").attr("url");
+    const image = $(el).find("enclosure").attr("url") || null;
 
-    let dateObj = null;
-    if (date) dateObj = new Date(date);
+    const dateObj = date ? new Date(date) : null;
 
     out.push({
       source: "City of Council Bluffs",
@@ -66,7 +59,7 @@ function parseCityRss(xml) {
       date,
       dateObj,
       location,
-      description,
+      description: desc,
       image:
         image ||
         "https://placehold.co/600x400/ff6600/ffffff?text=Council+Bluffs+Event",
@@ -76,26 +69,24 @@ function parseCityRss(xml) {
   return out;
 }
 
-// -------------------------
-// PARSE UNLEASHCB HTML
-// -------------------------
 function parseUnleashHtml(html) {
   const $ = cheerio.load(html);
   const out = [];
 
-  $(".listingCard").each((i, card) => {
-    const title = $(card).find(".listingCard-title").text().trim();
-    const link = "https://www.unleashcb.com" + $(card).find("a").attr("href");
-    const date = $(card).find(".listingCard-date").text().trim();
-    const img = $(card).find("img").attr("src");
+  $(".card").each((i, el) => {
+    const title = $(el).find(".card-title").text().trim();
+    const date = $(el).find(".card-subtitle").text().trim();
+    const img = $(el).find(".event-card-image img").attr("src");
+    const link = $(el).closest("a").attr("href");
 
-    let dateObj = null;
-    if (date) dateObj = parseUnleashDate(date);
+    if (!title) return;
+
+    let dateObj = parseUnleashDate(date);
 
     out.push({
       source: "UnleashCB",
       title,
-      link,
+      link: link ? "https://www.unleashcb.com" + link : "",
       date,
       dateObj,
       location: "",
@@ -109,14 +100,12 @@ function parseUnleashHtml(html) {
   return out;
 }
 
-// Convert UnleashCB date text to Date()
-function parseUnleashDate(text) {
-  // Example: "November 14 | 5:00 - 8:00 p.m."
-  let dayPart = text.split("|")[0].trim();
-  return new Date(dayPart);
+function parseUnleashDate(dateText) {
+  if (!dateText) return null;
+  const cleaned = dateText.split("|")[0].trim();
+  return new Date(cleaned);
 }
 
-// Strip HTML tags
 function stripHtml(html) {
   return html ? html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() : "";
 }
